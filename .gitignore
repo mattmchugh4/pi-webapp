@@ -1,0 +1,7 @@
+# SSL certificates
+nginx/certs/
+
+# Other common files
+.env
+.DS_Store
+*.log
