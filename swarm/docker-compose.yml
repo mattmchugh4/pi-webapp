@@ -18,19 +18,19 @@ services:
     networks:
       - webnet
 
-reddit-summarizer:
-  image: reddit-summarizer-flask
-  env_file:
-    - ./config/.reddit-ai-summarizer-backend.env
-  deploy:
-    mode: replicated
-    replicas: 2
-    restart_policy:
-      condition: on-failure
-  environment:
-    - LOG_LEVEL=DEBUG
-  networks:
-    - webnet
+  reddit-summarizer:
+    image: reddit-summarizer-flask
+    env_file:
+      - ./config/.reddit-ai-summarizer-backend.env
+    deploy:
+      mode: replicated
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+    environment:
+      - LOG_LEVEL=DEBUG
+    networks:
+      - webnet
 networks:
   webnet:
     driver: overlay
