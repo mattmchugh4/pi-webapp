@@ -14,7 +14,7 @@ set -e
 
 # Default values
 STACK_NAME="webstack"
-COMPOSE_FILE="docker-compose.yml"
+COMPOSE_FILE="./swarm/docker-compose.yml"
 PULL=false
 UPDATE_REDDIT=false
 FORCE=false
