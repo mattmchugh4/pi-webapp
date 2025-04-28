@@ -82,7 +82,7 @@ fi
 # Pull latest images if requested
 if [ "$PULL" = true ]; then
   echo "Pulling latest Docker images..."
-  docker compose -f $COMPOSE_FILE pull
+  docker compose -f "$COMPOSE_FILE" pull
 fi
 
 # Deploy the stack
