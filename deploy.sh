@@ -15,16 +15,15 @@ set -e
 # Default values
 STACK_NAME="webstack"
 COMPOSE_FILE="docker-compose.yml"
-PULL=true
-UPDATE_REDDIT=true
+PULL=false
+UPDATE_REDDIT=false
 FORCE=false
 PRUNE=false
 
 # Function to display help
 show_help() {
-  grep "^#" "$0" | grep -v "!/bin/bash" | sed 's/^# //' | sed 's/^#//'
+  grep "^#" "$0" | grep -v "^#!/bin/bash" | sed 's/^# //' | sed 's/^#//'
 }
-
 # Process command line arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +64,15 @@ fi
 echo "Pulling latest code changes..."
 git pull
 
+# Single prompt to handle both pulling images and updating services
+if [ "$PULL" = false ] && [ "$UPDATE_REDDIT" = false ]; then
+  read -p "Update before deploying? This will rebuild the Reddit Summarizer and pull latest images (y/N): " response
+  if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    PULL=true
+    UPDATE_REDDIT=true
+  fi
+fi
+
 # Update and rebuild the reddit-summarizer if requested
 if [ "$UPDATE_REDDIT" = true ]; then
   echo "Updating Reddit Summarizer service..."
@@ -74,7 +82,7 @@ fi
 # Pull latest images if requested
 if [ "$PULL" = true ]; then
   echo "Pulling latest Docker images..."
-  docker-compose -f $COMPOSE_FILE pull
+  docker compose -f $COMPOSE_FILE pull
 fi
 
 # Deploy the stack
