@@ -60,13 +60,58 @@ apt install -y \
     ufw \
     logwatch \
     procps \
-    docker.io \
-    docker-compose-plugin \
+    ca-certificates \
+    gnupg \
     libraspberrypi-bin
 
 # Enable vnstat idempotently
 systemctl enable vnstat
 systemctl is-active --quiet vnstat || systemctl start vnstat
+
+# =============================================================================
+# Section 2.1: Install Docker Engine + Compose v2 (official repo)
+# =============================================================================
+log "Installing Docker Engine and Compose v2..."
+
+# Remove Debian docker.io if present to avoid conflicts with Docker's repo
+if dpkg -l | grep -q '^ii\s\+docker\.io\b'; then
+    apt remove -y docker.io || true
+fi
+
+# Ensure keyring directory exists
+install -m 0755 -d /etc/apt/keyrings
+
+# Install Docker's official GPG key if missing
+if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+fi
+
+# Add Docker apt repository if missing
+if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+    . /etc/os-release
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+    apt update -y
+fi
+
+# Install Docker Engine and plugins (Compose v2 as plugin)
+apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Enable and start Docker
+systemctl enable --now docker
+
+# Add invoking user to docker group for non-root usage
+if id -nG "${SUDO_USER:-}" 2>/dev/null | grep -qw docker; then
+    :
+else
+    USER_TO_ADD="${SUDO_USER:-$(logname 2>/dev/null || echo pi)}"
+    if id "$USER_TO_ADD" >/dev/null 2>&1; then
+        usermod -aG docker "$USER_TO_ADD" || true
+        warn "User '$USER_TO_ADD' added to 'docker' group. Log out and back in for it to take effect."
+    fi
+fi
+
+
 
 # =============================================================================
 # Section 3: Configure Fail2ban
