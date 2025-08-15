@@ -64,14 +64,15 @@ apt install -y \
     docker-compose-plugin \
     libraspberrypi-bin
 
-# Enable vnstat
-systemctl enable --now vnstat
+# Enable vnstat idempotently
+systemctl enable vnstat
+systemctl is-active --quiet vnstat || systemctl start vnstat
 
 # =============================================================================
 # Section 3: Configure Fail2ban
 # =============================================================================
 log "Configuring Fail2ban..."
-cat >/etc/fail2ban/jail.local <<'EOF'
+jail_content=$(cat <<'EOF'
 [sshd]
 enabled = true
 port    = ssh
@@ -80,43 +81,112 @@ logpath = /var/log/auth.log
 maxretry = 5
 bantime = 1h
 EOF
+)
+
+fail2ban_changed=0
+if [ -f /etc/fail2ban/jail.local ]; then
+    if printf "%s\n" "$jail_content" | cmp -s - /etc/fail2ban/jail.local; then
+        log "Fail2ban jail.local already up to date."
+    else
+        printf "%s\n" "$jail_content" > /etc/fail2ban/jail.local
+        log "Updated /etc/fail2ban/jail.local"
+        fail2ban_changed=1
+    fi
+else
+    printf "%s\n" "$jail_content" > /etc/fail2ban/jail.local
+    log "Created /etc/fail2ban/jail.local"
+    fail2ban_changed=1
+fi
+
 systemctl enable --now fail2ban
-systemctl restart fail2ban
+if [ "$fail2ban_changed" -eq 1 ]; then
+    systemctl reload fail2ban || systemctl restart fail2ban
+fi
 
 # =============================================================================
 # Section 4: Configure UFW
 # =============================================================================
 log "Configuring UFW firewall..."
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw --force enable
+
+# Enable only if not already active
+if ufw status | grep -q "Status: active"; then
+    ufw_active=1
+else
+    ufw_active=0
+fi
+
+# Set defaults only if different (falls back to setting when unknown)
+if ufw status verbose 2>/dev/null | grep -i "^Default:" >/dev/null; then
+    defaults_line=$(ufw status verbose 2>/dev/null | grep -i "^Default:")
+    echo "$defaults_line" | grep -qi "deny (incoming)" || ufw default deny incoming
+    echo "$defaults_line" | grep -qi "allow (outgoing)" || ufw default allow outgoing
+else
+    ufw default deny incoming
+    ufw default allow outgoing
+fi
+
+# Add SSH rule only if not already present
+if ! ufw status | grep -qiE '(^|\b)(22/tcp|ssh)\b.*ALLOW'; then
+    ufw allow ssh
+fi
+
+if [ "$ufw_active" -eq 0 ]; then
+    ufw --force enable
+fi
 
 # =============================================================================
-# Section 5: SSH Hardening (Safe)
+# Section 5: SSH Hardening (Safe & Idempotent)
 # =============================================================================
-if grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config; then
-    if [ -f "$HOME/.ssh/authorized_keys" ] && [ -s "$HOME/.ssh/authorized_keys" ]; then
-        log "Disabling SSH password authentication..."
-        sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+if [ -f "$HOME/.ssh/authorized_keys" ] && [ -s "$HOME/.ssh/authorized_keys" ]; then
+    log "Ensuring SSH password authentication is disabled..."
+    if grep -Eq '^\s*PasswordAuthentication\s+no\s*$' /etc/ssh/sshd_config; then
+        log "PasswordAuthentication already disabled."
     else
-        warn "SSH keys not found — keeping password authentication enabled."
+        if grep -Eq '^[#[:space:]]*PasswordAuthentication[[:space:]]+' /etc/ssh/sshd_config; then
+            sed -i 's/^[#[:space:]]*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+        else
+            echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+        fi
+        systemctl reload sshd
     fi
-    systemctl reload sshd
+else
+    warn "SSH keys not found — keeping password authentication enabled."
 fi
 
 # =============================================================================
 # Section 6: System Optimization
 # =============================================================================
 log "Setting low swappiness..."
-if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
-    cat >> /etc/sysctl.conf <<EOF
+sysctl_needs_reload=0
 
-# Added by pi_setup.sh
-vm.swappiness = 10
-vm.vfs_cache_pressure = 50
-EOF
+# Ensure vm.swappiness = 10
+if grep -Eq '^\s*vm\.swappiness\s*=\s*10\s*$' /etc/sysctl.conf; then
+    :
+else
+    if grep -Eq '^\s*vm\.swappiness\s*=' /etc/sysctl.conf; then
+        sed -i 's/^\s*vm\.swappiness\s*=.*/vm.swappiness = 10/' /etc/sysctl.conf
+    else
+        printf "\n# Added by pi_setup.sh\nvm.swappiness = 10\n" >> /etc/sysctl.conf
+    fi
+    sysctl_needs_reload=1
+fi
+
+# Ensure vm.vfs_cache_pressure = 50
+if grep -Eq '^\s*vm\.vfs_cache_pressure\s*=\s*50\s*$' /etc/sysctl.conf; then
+    :
+else
+    if grep -Eq '^\s*vm\.vfs_cache_pressure\s*=' /etc/sysctl.conf; then
+        sed -i 's/^\s*vm\.vfs_cache_pressure\s*=.*/vm.vfs_cache_pressure = 50/' /etc/sysctl.conf
+    else
+        printf "vm.vfs_cache_pressure = 50\n" >> /etc/sysctl.conf
+    fi
+    sysctl_needs_reload=1
+fi
+
+if [ "$sysctl_needs_reload" -eq 1 ]; then
     sysctl -p
+else
+    sysctl -w vm.swappiness=10 vm.vfs_cache_pressure=50 >/dev/null
 fi
 
 # =============================================================================
@@ -125,17 +195,28 @@ fi
 log "Checking swap configuration..."
 if command -v dphys-swapfile &>/dev/null; then
     sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
-    systemctl restart dphys-swapfile
+    systemctl enable --now dphys-swapfile
 else
     if [ ! -f /swapfile ]; then
         log "Creating 2GB swapfile..."
         fallocate -l 2G /swapfile
         chmod 600 /swapfile
         mkswap /swapfile
-        swapon /swapfile
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        # Ensure fstab entry exists
+        if ! grep -qE '^/swapfile\s' /etc/fstab; then
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
     else
-        log "Swapfile already exists — skipping..."
+        # Ensure correct permissions
+        chmod 600 /swapfile
+        # Ensure fstab entry exists
+        if ! grep -qE '^/swapfile\s' /etc/fstab; then
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
+    fi
+    # Ensure swap is active (without duplicating)
+    if ! swapon --show | grep -qE '^/swapfile\b'; then
+        swapon /swapfile || true
     fi
 fi
 
