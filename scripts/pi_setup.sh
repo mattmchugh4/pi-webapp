@@ -61,8 +61,7 @@ apt install -y \
     logwatch \
     procps \
     ca-certificates \
-    gnupg \
-    libraspberrypi-bin
+    gnupg
 
 # Enable vnstat idempotently
 systemctl enable vnstat
