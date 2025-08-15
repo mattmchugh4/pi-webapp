@@ -117,13 +117,15 @@ fi
 # =============================================================================
 log "Configuring Fail2ban..."
 jail_content=$(cat <<'EOF'
+[DEFAULT]
+maxretry = 5
+bantime = 1h
+backend = systemd
+
 [sshd]
 enabled = true
 port    = ssh
 filter  = sshd
-logpath = /var/log/auth.log
-maxretry = 5
-bantime = 1h
 EOF
 )
 
